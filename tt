@@ -1,0 +1,2274 @@
+  --// ZANJIHUB • BAHAY KUBO GARDEN
+--// AUTO FRUIT COLLECT UI V4
+--//
+--// Features:
+--// Fruits to Collect
+--// Whitelist Mutation
+--// Blacklist Mutation
+--// Mutation Count
+--// KG Rule
+--// KG Threshold
+--// Fast Auto Fruit Collect
+--//
+--// Mutation Count:
+--// 0 = Disabled
+--// 1 = Exactly 1 mutation
+--// 2 = Exactly 2 mutations
+--// etc.
+
+--------------------------------------------------
+-- SERVICES
+--------------------------------------------------
+
+local Players = game:GetService("Players")
+local Workspace = game:GetService("Workspace")
+local ReplicatedStorage = game:GetService("ReplicatedStorage")
+local UserInputService = game:GetService("UserInputService")
+local CoreGui = game:GetService("CoreGui")
+
+local Player = Players.LocalPlayer
+
+local ENV = getgenv and getgenv() or _G
+
+--------------------------------------------------
+-- STOP OLD VERSION
+--------------------------------------------------
+
+if ENV.ZANJIHUB_BKG_STOP then
+    pcall(ENV.ZANJIHUB_BKG_STOP)
+end
+
+--------------------------------------------------
+-- CONFIG
+--------------------------------------------------
+
+local Config = {
+    AutoCollect = false,
+
+    Fruits = {},
+
+    WhitelistMutations = {},
+
+    BlacklistMutations = {},
+
+    MutationCount = 0,
+
+    KGRule = "Any KG",
+
+    KGThreshold = 1,
+
+    PickupDelay = 0.025,
+
+    ScanDelay = 0.06,
+}
+
+local State = {
+    Running = true,
+
+    Status = "Idle",
+
+    Collected = 0,
+}
+
+--------------------------------------------------
+-- CHARACTER
+--------------------------------------------------
+
+local function getCharacter()
+    return Player.Character
+        or Player.CharacterAdded:Wait()
+end
+
+local function getRoot()
+    local character = getCharacter()
+
+    return character:FindFirstChild(
+        "HumanoidRootPart"
+    )
+end
+
+--------------------------------------------------
+-- FARM
+--------------------------------------------------
+
+local function getOwnFarm()
+    local farms =
+        Workspace:FindFirstChild(
+            "ActiveFarms"
+        )
+
+    if not farms then
+        return nil
+    end
+
+    return farms:FindFirstChild(
+        "Farm_" .. tostring(Player.UserId)
+    )
+end
+
+local function getPlants()
+    local farm = getOwnFarm()
+
+    if not farm then
+        return nil
+    end
+
+    return farm:FindFirstChild(
+        "Plants"
+    )
+end
+
+--------------------------------------------------
+-- MUTATION PARSER
+--------------------------------------------------
+
+local function trim(text)
+    return tostring(text)
+        :gsub("^%s+", "")
+        :gsub("%s+$", "")
+end
+
+local function parseMutations(value)
+    local mutations = {}
+
+    if value == nil then
+        return mutations
+    end
+
+    --------------------------------------------------
+    -- TABLE SUPPORT
+    --------------------------------------------------
+
+    if typeof(value) == "table" then
+        for key, v in pairs(value) do
+            local name
+
+            if typeof(key) == "string"
+                and (
+                    v == true
+                    or v == 1
+                )
+            then
+                name = key
+
+            elseif typeof(v) == "string" then
+                name = v
+            end
+
+            if name then
+                name = trim(name)
+
+                if name ~= "" then
+                    mutations[#mutations + 1] =
+                        name
+                end
+            end
+        end
+
+        return mutations
+    end
+
+    --------------------------------------------------
+    -- STRING SUPPORT
+    --------------------------------------------------
+
+    local text =
+        trim(tostring(value))
+
+    if text == ""
+        or text == "None"
+        or text == "Normal"
+    then
+        return mutations
+    end
+
+    --------------------------------------------------
+    -- SUPPORT:
+    -- Basa
+    -- Basa,Gold
+    -- Basa + Gold
+    -- Basa|Gold
+    -- Basa;Gold
+    --------------------------------------------------
+
+    text = text
+        :gsub("%s*%+%s*", ",")
+        :gsub("%s*;%s*", ",")
+        :gsub("%s*|%s*", ",")
+
+    for entry in text:gmatch("[^,]+") do
+        entry = trim(entry)
+
+        if entry ~= "" then
+            mutations[#mutations + 1] =
+                entry
+        end
+    end
+
+    return mutations
+end
+
+--------------------------------------------------
+-- POSITION OBJECT
+--------------------------------------------------
+
+local function getPositionObject(obj)
+    if not obj then
+        return nil
+    end
+
+    if obj:IsA("BasePart") then
+        return obj
+    end
+
+    if obj:IsA("Model") then
+        return obj.PrimaryPart
+            or obj:FindFirstChildWhichIsA(
+                "BasePart",
+                true
+            )
+    end
+
+    local parent = obj.Parent
+
+    while parent
+        and parent ~= Workspace
+    do
+        if parent:IsA("BasePart") then
+            return parent
+        end
+
+        if parent:IsA("Model") then
+            local part =
+                parent.PrimaryPart
+                or parent:FindFirstChildWhichIsA(
+                    "BasePart",
+                    true
+                )
+
+            if part then
+                return part
+            end
+        end
+
+        parent = parent.Parent
+    end
+
+    return nil
+end
+
+--------------------------------------------------
+-- FRUIT DATA
+--------------------------------------------------
+
+local function getFruitData(obj)
+    if not obj then
+        return nil
+    end
+
+    local fruitId =
+        obj:GetAttribute("FruitId")
+
+    local cropName =
+        obj:GetAttribute("CropName")
+
+    local weight =
+        tonumber(
+            obj:GetAttribute("Weight")
+        )
+
+    if fruitId == nil
+        or cropName == nil
+        or weight == nil
+    then
+        return nil
+    end
+
+    local prompt =
+        obj:FindFirstChild(
+            "HarvestPrompt"
+        )
+
+    if not prompt then
+        prompt =
+            obj:FindFirstChildWhichIsA(
+                "ProximityPrompt",
+                true
+            )
+    end
+
+    if not prompt
+        or not prompt:IsA(
+            "ProximityPrompt"
+        )
+    then
+        return nil
+    end
+
+    local displayName =
+        obj:GetAttribute("DisplayName")
+
+    if displayName == nil
+        or tostring(displayName) == ""
+    then
+        displayName = cropName
+    end
+
+    local mutationValue =
+        obj:GetAttribute("Mutations")
+
+    local mutations =
+        parseMutations(
+            mutationValue
+        )
+
+    return {
+        Object = obj,
+
+        Prompt = prompt,
+
+        PositionObject =
+            getPositionObject(obj),
+
+        CropName =
+            tostring(cropName),
+
+        DisplayName =
+            tostring(displayName),
+
+        Weight = weight,
+
+        FruitId = fruitId,
+
+        PlantId =
+            obj:GetAttribute("PlantId"),
+
+        Mutations = mutations,
+
+        MutationRaw =
+            mutationValue,
+    }
+end
+
+--------------------------------------------------
+-- FRUIT FILTER
+--------------------------------------------------
+
+local function passesFruitFilter(data)
+    if next(Config.Fruits) == nil then
+        return true
+    end
+
+    return Config.Fruits[
+        data.CropName
+    ] == true
+end
+
+--------------------------------------------------
+-- KG FILTER
+--------------------------------------------------
+
+local function passesKGFilter(data)
+    local threshold =
+        tonumber(
+            Config.KGThreshold
+        ) or 0
+
+    if Config.KGRule == "Any KG" then
+        return true
+    end
+
+    if Config.KGRule == "Above KG" then
+        return data.Weight >= threshold
+    end
+
+    if Config.KGRule == "Below KG" then
+        return data.Weight <= threshold
+    end
+
+    return true
+end
+
+--------------------------------------------------
+-- MUTATION FILTER
+--------------------------------------------------
+
+local function mutationsToSet(list)
+    local set = {}
+
+    for _, name in ipairs(list) do
+        set[
+            tostring(name):lower()
+        ] = true
+    end
+
+    return set
+end
+
+local function passesMutationFilter(data)
+    local mutationCount =
+        #data.Mutations
+
+    --------------------------------------------------
+    -- MUTATION COUNT
+    --------------------------------------------------
+
+    local wantedCount =
+        tonumber(
+            Config.MutationCount
+        ) or 0
+
+    if wantedCount > 0
+        and mutationCount ~= wantedCount
+    then
+        return false
+    end
+
+    --------------------------------------------------
+    -- CURRENT FRUIT MUTATIONS
+    --------------------------------------------------
+
+    local current =
+        mutationsToSet(
+            data.Mutations
+        )
+
+    --------------------------------------------------
+    -- BLACKLIST
+    -- any blacklisted mutation = reject
+    --------------------------------------------------
+
+    for mutation, enabled
+        in pairs(
+            Config.BlacklistMutations
+        )
+    do
+        if enabled
+            and current[
+                tostring(mutation):lower()
+            ]
+        then
+            return false
+        end
+    end
+
+    --------------------------------------------------
+    -- WHITELIST
+    --
+    -- Empty whitelist = allow everything.
+    -- If whitelist has selections,
+    -- fruit must contain at least ONE.
+    --------------------------------------------------
+
+    if next(
+        Config.WhitelistMutations
+    ) ~= nil then
+
+        local matched = false
+
+        for mutation, enabled
+            in pairs(
+                Config.WhitelistMutations
+            )
+        do
+            if enabled
+                and current[
+                    tostring(mutation):lower()
+                ]
+            then
+                matched = true
+                break
+            end
+        end
+
+        if not matched then
+            return false
+        end
+    end
+
+    return true
+end
+
+--------------------------------------------------
+-- MATCHING FRUITS
+--------------------------------------------------
+
+local function getMatchingFruits()
+    local plants = getPlants()
+
+    if not plants then
+        return {}
+    end
+
+    local list = {}
+    local seen = {}
+
+    for _, obj in ipairs(
+        plants:GetDescendants()
+    ) do
+        local data =
+            getFruitData(obj)
+
+        if data then
+            local key =
+                tostring(data.PlantId)
+                .. ":"
+                .. tostring(data.FruitId)
+
+            if not seen[key] then
+                seen[key] = true
+
+                if data.Prompt.Enabled
+                    and passesFruitFilter(data)
+                    and passesKGFilter(data)
+                    and passesMutationFilter(data)
+                then
+                    list[#list + 1] =
+                        data
+                end
+            end
+        end
+    end
+
+    --------------------------------------------------
+    -- HIGHEST KG FIRST
+    --------------------------------------------------
+
+    table.sort(
+        list,
+        function(a, b)
+            return a.Weight > b.Weight
+        end
+    )
+
+    return list
+end
+
+--------------------------------------------------
+-- DISCOVER FRUITS
+--------------------------------------------------
+
+local function discoverFruits()
+    local found = {}
+
+    local plants = getPlants()
+
+    if not plants then
+        return found
+    end
+
+    for _, obj in ipairs(
+        plants:GetDescendants()
+    ) do
+        local data =
+            getFruitData(obj)
+
+        if data then
+            found[
+                data.CropName
+            ] =
+                data.DisplayName
+        end
+    end
+
+    return found
+end
+
+--------------------------------------------------
+-- DISCOVER MUTATIONS
+--------------------------------------------------
+
+local function addMutation(
+    mutations,
+    name
+)
+    if not name then
+        return
+    end
+
+    name =
+        trim(
+            tostring(name)
+        )
+
+    if name == ""
+        or name == "Normal"
+        or name == "None"
+    then
+        return
+    end
+
+    mutations[name] = true
+end
+
+local function addMutationValue(
+    mutations,
+    value
+)
+    local list =
+        parseMutations(value)
+
+    for _, name in ipairs(list) do
+        addMutation(
+            mutations,
+            name
+        )
+    end
+end
+
+local function scanMutationTable(
+    source,
+    mutations,
+    depth,
+    visited
+)
+    depth = depth or 0
+    visited = visited or {}
+
+    if depth > 6 then
+        return
+    end
+
+    if typeof(source) ~= "table" then
+        return
+    end
+
+    if visited[source] then
+        return
+    end
+
+    visited[source] = true
+
+    for key, value in pairs(source) do
+        --------------------------------------------------
+        -- mutation table keys often look like:
+        -- Basa = {...}
+        -- Golden = {...}
+        --------------------------------------------------
+
+        if typeof(key) == "string" then
+            local lower =
+                key:lower()
+
+            if lower ~= "mutations"
+                and lower ~= "mutation"
+                and lower ~= "name"
+                and lower ~= "displayname"
+                and lower ~= "multiplier"
+                and lower ~= "chance"
+                and lower ~= "color"
+            then
+                if typeof(value) == "table" then
+                    if value.Multiplier
+                        or value.Chance
+                        or value.Color
+                        or value.DisplayName
+                        or value.Name
+                    then
+                        addMutation(
+                            mutations,
+                            value.DisplayName
+                                or value.Name
+                                or key
+                        )
+                    end
+                end
+            end
+
+            if lower:find(
+                "mutation",
+                1,
+                true
+            ) then
+                if typeof(value)
+                    == "string"
+                then
+                    addMutationValue(
+                        mutations,
+                        value
+                    )
+                end
+            end
+        end
+
+        if typeof(value) == "table" then
+            scanMutationTable(
+                value,
+                mutations,
+                depth + 1,
+                visited
+            )
+        end
+    end
+end
+
+local function discoverMutations()
+    local mutations = {}
+
+    --------------------------------------------------
+    -- LIVE FRUITS
+    --------------------------------------------------
+
+    local plants = getPlants()
+
+    if plants then
+        for _, obj in ipairs(
+            plants:GetDescendants()
+        ) do
+            if obj:GetAttribute(
+                "FruitId"
+            ) ~= nil then
+                addMutationValue(
+                    mutations,
+                    obj:GetAttribute(
+                        "Mutations"
+                    )
+                )
+            end
+        end
+    end
+
+    --------------------------------------------------
+    -- BACKPACK CROPS
+    --------------------------------------------------
+
+    local backpack =
+        Player:FindFirstChild(
+            "Backpack"
+        )
+
+    if backpack then
+        for _, obj in ipairs(
+            backpack:GetChildren()
+        ) do
+            if obj:IsA("Tool")
+                and obj:GetAttribute(
+                    "CropName"
+                )
+            then
+                addMutationValue(
+                    mutations,
+                    obj:GetAttribute(
+                        "Mutations"
+                    )
+                )
+            end
+        end
+    end
+
+    --------------------------------------------------
+    -- CHARACTER HELD CROPS
+    --------------------------------------------------
+
+    local character =
+        Player.Character
+
+    if character then
+        for _, obj in ipairs(
+            character:GetChildren()
+        ) do
+            if obj:IsA("Tool")
+                and obj:GetAttribute(
+                    "CropName"
+                )
+            then
+                addMutationValue(
+                    mutations,
+                    obj:GetAttribute(
+                        "Mutations"
+                    )
+                )
+            end
+        end
+    end
+
+    --------------------------------------------------
+    -- MUTATION-RELATED MODULES
+    --------------------------------------------------
+
+    for _, obj in ipairs(
+        ReplicatedStorage:GetDescendants()
+    ) do
+        if obj:IsA("ModuleScript") then
+            local lower =
+                obj.Name:lower()
+
+            if lower:find(
+                "mutation",
+                1,
+                true
+            ) then
+                local ok, result =
+                    pcall(require, obj)
+
+                if ok
+                    and typeof(result)
+                        == "table"
+                then
+                    scanMutationTable(
+                        result,
+                        mutations
+                    )
+                end
+            end
+        end
+    end
+
+    --------------------------------------------------
+    -- SORT
+    --------------------------------------------------
+
+    local result = {}
+
+    for name in pairs(mutations) do
+        result[#result + 1] =
+            name
+    end
+
+    table.sort(result)
+
+    return result
+end
+
+--------------------------------------------------
+-- MOVE TO FRUIT
+--------------------------------------------------
+
+local function moveNearFruit(data)
+    local root = getRoot()
+
+    if not root then
+        return false
+    end
+
+    local part =
+        data.PositionObject
+
+    if not part
+        or not part.Parent
+    then
+        return false
+    end
+
+    root.CFrame =
+        part.CFrame
+        * CFrame.new(
+            0,
+            2.5,
+            2
+        )
+
+    return true
+end
+
+--------------------------------------------------
+-- PICK FRUIT
+--------------------------------------------------
+
+local function collectFruit(data)
+    if not fireproximityprompt then
+        Config.AutoCollect = false
+
+        State.Status =
+            "fireproximityprompt unsupported"
+
+        return false
+    end
+
+    if not data
+        or not data.Object
+        or not data.Object.Parent
+        or not data.Prompt
+        or not data.Prompt.Parent
+    then
+        return false
+    end
+
+    moveNearFruit(data)
+
+    task.wait(0.012)
+
+    pcall(function()
+        fireproximityprompt(
+            data.Prompt,
+            0
+        )
+    end)
+
+    return true
+end
+
+--------------------------------------------------
+-- FAST COLLECT BATCH
+--------------------------------------------------
+
+local function collectBatch(fruits)
+    local root = getRoot()
+
+    if not root then
+        return
+    end
+
+    local originalPosition =
+        root.CFrame
+
+    State.Status =
+        "Collecting "
+        .. tostring(#fruits)
+        .. " fruits..."
+
+    for index, fruit in ipairs(fruits) do
+        if not State.Running
+            or not Config.AutoCollect
+        then
+            break
+        end
+
+        if fruit.Object
+            and fruit.Object.Parent
+            and fruit.Prompt
+            and fruit.Prompt.Parent
+        then
+            State.Status =
+                string.format(
+                    "%s %.2f KG (%d/%d)",
+                    fruit.DisplayName,
+                    fruit.Weight,
+                    index,
+                    #fruits
+                )
+
+            collectFruit(fruit)
+
+            State.Collected += 1
+
+            task.wait(
+                Config.PickupDelay
+            )
+        end
+    end
+
+    --------------------------------------------------
+    -- RETURN
+    --------------------------------------------------
+
+    if root
+        and root.Parent
+    then
+        root.CFrame =
+            originalPosition
+    end
+
+    State.Status =
+        "Scanning..."
+end
+
+--------------------------------------------------
+-- GUI PARENT
+--------------------------------------------------
+
+local function getGuiParent()
+    if gethui then
+        local ok, result =
+            pcall(gethui)
+
+        if ok and result then
+            return result
+        end
+    end
+
+    local ok, result =
+        pcall(function()
+            return CoreGui
+        end)
+
+    if ok and result then
+        return result
+    end
+
+    return Player:WaitForChild(
+        "PlayerGui"
+    )
+end
+
+local GuiParent =
+    getGuiParent()
+
+local oldGui =
+    GuiParent:FindFirstChild(
+        "ZANJIHUB_BAHAY_KUBO"
+    )
+
+if oldGui then
+    oldGui:Destroy()
+end
+
+--------------------------------------------------
+-- SCREEN GUI
+--------------------------------------------------
+
+local Gui =
+    Instance.new("ScreenGui")
+
+Gui.Name =
+    "ZANJIHUB_BAHAY_KUBO"
+
+Gui.ResetOnSpawn = false
+
+Gui.ZIndexBehavior =
+    Enum.ZIndexBehavior.Sibling
+
+Gui.Parent =
+    GuiParent
+
+--------------------------------------------------
+-- MAIN
+--------------------------------------------------
+
+local Main =
+    Instance.new("Frame")
+
+Main.Size =
+    UDim2.fromOffset(
+        400,
+        610
+    )
+
+Main.Position =
+    UDim2.new(
+        0.5,
+        -200,
+        0.5,
+        -305
+    )
+
+Main.BackgroundColor3 =
+    Color3.fromRGB(
+        18,
+        18,
+        24
+    )
+
+Main.BorderSizePixel = 0
+
+Main.Parent = Gui
+
+local MainCorner =
+    Instance.new("UICorner")
+
+MainCorner.CornerRadius =
+    UDim.new(0, 12)
+
+MainCorner.Parent =
+    Main
+
+--------------------------------------------------
+-- HEADER
+--------------------------------------------------
+
+local Header =
+    Instance.new("Frame")
+
+Header.Size =
+    UDim2.new(
+        1,
+        0,
+        0,
+        52
+    )
+
+Header.BackgroundTransparency = 1
+
+Header.Parent = Main
+
+local Title =
+    Instance.new("TextLabel")
+
+Title.Size =
+    UDim2.new(
+        1,
+        -60,
+        1,
+        0
+    )
+
+Title.Position =
+    UDim2.fromOffset(
+        16,
+        0
+    )
+
+Title.BackgroundTransparency = 1
+
+Title.Text =
+    "ZANJIHUB • Bahay Kubo"
+
+Title.TextColor3 =
+    Color3.fromRGB(
+        245,
+        245,
+        250
+    )
+
+Title.Font =
+    Enum.Font.GothamBold
+
+Title.TextSize = 17
+
+Title.TextXAlignment =
+    Enum.TextXAlignment.Left
+
+Title.Parent =
+    Header
+
+--------------------------------------------------
+-- CLOSE
+--------------------------------------------------
+
+local Close =
+    Instance.new("TextButton")
+
+Close.Size =
+    UDim2.fromOffset(
+        34,
+        34
+    )
+
+Close.Position =
+    UDim2.new(
+        1,
+        -44,
+        0,
+        9
+    )
+
+Close.BackgroundColor3 =
+    Color3.fromRGB(
+        35,
+        35,
+        43
+    )
+
+Close.Text = "×"
+
+Close.TextColor3 =
+    Color3.fromRGB(
+        235,
+        235,
+        240
+    )
+
+Close.TextSize = 22
+
+Close.Font =
+    Enum.Font.GothamBold
+
+Close.Parent =
+    Header
+
+local CloseCorner =
+    Instance.new("UICorner")
+
+CloseCorner.CornerRadius =
+    UDim.new(0, 8)
+
+CloseCorner.Parent =
+    Close
+
+--------------------------------------------------
+-- DRAG
+--------------------------------------------------
+
+do
+    local dragging = false
+    local dragStart
+    local startPosition
+
+    Header.InputBegan:Connect(
+        function(input)
+
+            if input.UserInputType
+                    == Enum.UserInputType.MouseButton1
+                or input.UserInputType
+                    == Enum.UserInputType.Touch
+            then
+                dragging = true
+
+                dragStart =
+                    input.Position
+
+                startPosition =
+                    Main.Position
+            end
+        end
+    )
+
+    UserInputService.InputChanged:Connect(
+        function(input)
+
+            if not dragging then
+                return
+            end
+
+            if input.UserInputType
+                    == Enum.UserInputType.MouseMovement
+                or input.UserInputType
+                    == Enum.UserInputType.Touch
+            then
+                local delta =
+                    input.Position
+                    - dragStart
+
+                Main.Position =
+                    UDim2.new(
+                        startPosition.X.Scale,
+                        startPosition.X.Offset
+                            + delta.X,
+
+                        startPosition.Y.Scale,
+                        startPosition.Y.Offset
+                            + delta.Y
+                    )
+            end
+        end
+    )
+
+    UserInputService.InputEnded:Connect(
+        function(input)
+
+            if input.UserInputType
+                    == Enum.UserInputType.MouseButton1
+                or input.UserInputType
+                    == Enum.UserInputType.Touch
+            then
+                dragging = false
+            end
+        end
+    )
+end
+
+--------------------------------------------------
+-- UI HELPERS
+--------------------------------------------------
+
+local function makeLabel(text, y)
+    local label =
+        Instance.new("TextLabel")
+
+    label.Size =
+        UDim2.new(
+            1,
+            -32,
+            0,
+            20
+        )
+
+    label.Position =
+        UDim2.fromOffset(
+            16,
+            y
+        )
+
+    label.BackgroundTransparency = 1
+
+    label.Text = text
+
+    label.TextColor3 =
+        Color3.fromRGB(
+            185,
+            185,
+            198
+        )
+
+    label.Font =
+        Enum.Font.Gotham
+
+    label.TextSize = 13
+
+    label.TextXAlignment =
+        Enum.TextXAlignment.Left
+
+    label.Parent =
+        Main
+
+    return label
+end
+
+local function makeButton(text, y)
+    local button =
+        Instance.new("TextButton")
+
+    button.Size =
+        UDim2.new(
+            1,
+            -32,
+            0,
+            38
+        )
+
+    button.Position =
+        UDim2.fromOffset(
+            16,
+            y
+        )
+
+    button.BackgroundColor3 =
+        Color3.fromRGB(
+            31,
+            31,
+            40
+        )
+
+    button.TextColor3 =
+        Color3.fromRGB(
+            240,
+            240,
+            245
+        )
+
+    button.Text =
+        text
+
+    button.Font =
+        Enum.Font.GothamMedium
+
+    button.TextSize = 13
+
+    button.Parent =
+        Main
+
+    local corner =
+        Instance.new("UICorner")
+
+    corner.CornerRadius =
+        UDim.new(0, 8)
+
+    corner.Parent =
+        button
+
+    return button
+end
+
+local function makeTextBox(
+    text,
+    y
+)
+    local box =
+        Instance.new("TextBox")
+
+    box.Size =
+        UDim2.new(
+            1,
+            -32,
+            0,
+            38
+        )
+
+    box.Position =
+        UDim2.fromOffset(
+            16,
+            y
+        )
+
+    box.BackgroundColor3 =
+        Color3.fromRGB(
+            31,
+            31,
+            40
+        )
+
+    box.TextColor3 =
+        Color3.fromRGB(
+            240,
+            240,
+            245
+        )
+
+    box.Text =
+        text
+
+    box.ClearTextOnFocus =
+        false
+
+    box.Font =
+        Enum.Font.GothamMedium
+
+    box.TextSize = 13
+
+    box.Parent =
+        Main
+
+    local corner =
+        Instance.new("UICorner")
+
+    corner.CornerRadius =
+        UDim.new(0, 8)
+
+    corner.Parent =
+        box
+
+    return box
+end
+
+--------------------------------------------------
+-- GENERIC MULTI DROPDOWN
+--------------------------------------------------
+
+local OpenDropdown = nil
+
+local function createMultiDropdown(
+    y,
+    placeholder,
+    getOptions,
+    selectedTable
+)
+    local Button =
+        makeButton(
+            placeholder .. "  ▼",
+            y
+        )
+
+    local List =
+        Instance.new(
+            "ScrollingFrame"
+        )
+
+    List.Size =
+        UDim2.new(
+            1,
+            -32,
+            0,
+            170
+        )
+
+    List.Position =
+        UDim2.fromOffset(
+            16,
+            y + 40
+        )
+
+    List.BackgroundColor3 =
+        Color3.fromRGB(
+            24,
+            24,
+            32
+        )
+
+    List.BorderSizePixel = 0
+
+    List.ScrollBarThickness = 4
+
+    List.Visible = false
+
+    List.ZIndex = 100
+
+    List.Parent =
+        Main
+
+    local listCorner =
+        Instance.new("UICorner")
+
+    listCorner.CornerRadius =
+        UDim.new(0, 8)
+
+    listCorner.Parent =
+        List
+
+    local Layout =
+        Instance.new("UIListLayout")
+
+    Layout.Padding =
+        UDim.new(0, 4)
+
+    Layout.Parent =
+        List
+
+    local Padding =
+        Instance.new("UIPadding")
+
+    Padding.PaddingTop =
+        UDim.new(0, 6)
+
+    Padding.PaddingBottom =
+        UDim.new(0, 6)
+
+    Padding.PaddingLeft =
+        UDim.new(0, 6)
+
+    Padding.PaddingRight =
+        UDim.new(0, 6)
+
+    Padding.Parent =
+        List
+
+    Layout:GetPropertyChangedSignal(
+        "AbsoluteContentSize"
+    ):Connect(function()
+
+        List.CanvasSize =
+            UDim2.fromOffset(
+                0,
+                Layout.AbsoluteContentSize.Y
+                    + 12
+            )
+    end)
+
+    local function updateButton()
+        local selected = {}
+
+        for name, enabled
+            in pairs(selectedTable)
+        do
+            if enabled then
+                selected[#selected + 1] =
+                    name
+            end
+        end
+
+        table.sort(selected)
+
+        if #selected == 0 then
+            Button.Text =
+                placeholder
+                .. "  ▼"
+
+        elseif #selected == 1 then
+            Button.Text =
+                selected[1]
+                .. "  ▼"
+
+        else
+            Button.Text =
+                tostring(#selected)
+                .. " Selected  ▼"
+        end
+    end
+
+    local function clear()
+        for _, child
+            in ipairs(
+                List:GetChildren()
+            )
+        do
+            if child:IsA(
+                "TextButton"
+            ) then
+                child:Destroy()
+            end
+        end
+    end
+
+    local function refresh()
+        clear()
+
+        local options =
+            getOptions()
+
+        if #options == 0 then
+            local none =
+                Instance.new(
+                    "TextButton"
+                )
+
+            none.Size =
+                UDim2.new(
+                    1,
+                    0,
+                    0,
+                    32
+                )
+
+            none.BackgroundColor3 =
+                Color3.fromRGB(
+                    37,
+                    37,
+                    47
+                )
+
+            none.TextColor3 =
+                Color3.fromRGB(
+                    180,
+                    180,
+                    190
+                )
+
+            none.Text =
+                "No mutations detected"
+
+            none.Font =
+                Enum.Font.Gotham
+
+            none.TextSize = 12
+
+            none.ZIndex = 101
+
+            none.Parent =
+                List
+
+            return
+        end
+
+        for _, name
+            in ipairs(options)
+        do
+            local option =
+                Instance.new(
+                    "TextButton"
+                )
+
+            option.Size =
+                UDim2.new(
+                    1,
+                    0,
+                    0,
+                    32
+                )
+
+            option.BackgroundColor3 =
+                Color3.fromRGB(
+                    37,
+                    37,
+                    47
+                )
+
+            option.TextColor3 =
+                Color3.fromRGB(
+                    235,
+                    235,
+                    240
+                )
+
+            option.Font =
+                Enum.Font.Gotham
+
+            option.TextSize = 13
+
+            option.ZIndex = 101
+
+            option.Parent =
+                List
+
+            local corner =
+                Instance.new(
+                    "UICorner"
+                )
+
+            corner.CornerRadius =
+                UDim.new(0, 6)
+
+            corner.Parent =
+                option
+
+            local function update()
+                if selectedTable[
+                    name
+                ] then
+                    option.Text =
+                        "✓  " .. name
+
+                    option.BackgroundColor3 =
+                        Color3.fromRGB(
+                            82,
+                            61,
+                            160
+                        )
+                else
+                    option.Text =
+                        name
+
+                    option.BackgroundColor3 =
+                        Color3.fromRGB(
+                            37,
+                            37,
+                            47
+                        )
+                end
+            end
+
+            option.MouseButton1Click:Connect(
+                function()
+
+                    selectedTable[
+                        name
+                    ] =
+                        not selectedTable[
+                            name
+                        ]
+
+                    if not selectedTable[
+                        name
+                    ] then
+                        selectedTable[
+                            name
+                        ] = nil
+                    end
+
+                    update()
+
+                    updateButton()
+                end
+            )
+
+            update()
+        end
+
+        updateButton()
+    end
+
+    Button.MouseButton1Click:Connect(
+        function()
+
+            if OpenDropdown
+                and OpenDropdown
+                    ~= List
+            then
+                OpenDropdown.Visible =
+                    false
+            end
+
+            List.Visible =
+                not List.Visible
+
+            if List.Visible then
+                OpenDropdown =
+                    List
+
+                refresh()
+            else
+                OpenDropdown = nil
+            end
+        end
+    )
+
+    return {
+        Button = Button,
+        List = List,
+        Refresh = refresh,
+        UpdateButton = updateButton,
+    }
+end
+
+--------------------------------------------------
+-- FRUITS
+--------------------------------------------------
+
+makeLabel(
+    "Fruits to Collect",
+    58
+)
+
+local FruitNames = {}
+
+local FruitDropdown =
+    createMultiDropdown(
+        80,
+        "All Fruits",
+        function()
+
+            local found =
+                discoverFruits()
+
+            local options = {}
+
+            FruitNames = {}
+
+            for internal, display
+                in pairs(found)
+            do
+                FruitNames[
+                    display
+                ] =
+                    internal
+
+                options[
+                    #options + 1
+                ] =
+                    display
+            end
+
+            table.sort(options)
+
+            return options
+        end,
+        {}
+    )
+
+--------------------------------------------------
+-- override display -> internal selection
+--------------------------------------------------
+
+local FruitSelection =
+    FruitDropdown
+
+--------------------------------------------------
+-- WHITELIST MUTATION
+--------------------------------------------------
+
+makeLabel(
+    "Whitelist Mutation",
+    132
+)
+
+local WhitelistDropdown =
+    createMultiDropdown(
+        154,
+        "Any Mutation",
+        discoverMutations,
+        Config.WhitelistMutations
+    )
+
+--------------------------------------------------
+-- BLACKLIST MUTATION
+--------------------------------------------------
+
+makeLabel(
+    "Blacklist Mutation",
+    206
+)
+
+local BlacklistDropdown =
+    createMultiDropdown(
+        228,
+        "None",
+        discoverMutations,
+        Config.BlacklistMutations
+    )
+
+--------------------------------------------------
+-- MUTATION COUNT
+--------------------------------------------------
+
+makeLabel(
+    "Mutation Count",
+    280
+)
+
+local MutationCountBox =
+    makeTextBox(
+        "0",
+        302
+    )
+
+MutationCountBox.PlaceholderText =
+    "0 = Any mutation count"
+
+MutationCountBox.FocusLost:Connect(
+    function()
+
+        local value =
+            tonumber(
+                MutationCountBox.Text
+            )
+
+        if not value then
+            value = 0
+        end
+
+        value =
+            math.max(
+                0,
+                math.floor(value)
+            )
+
+        Config.MutationCount =
+            value
+
+        MutationCountBox.Text =
+            tostring(value)
+    end
+)
+
+--------------------------------------------------
+-- KG RULE
+--------------------------------------------------
+
+makeLabel(
+    "KG Rule",
+    354
+)
+
+local KGRuleButton =
+    makeButton(
+        "Any KG  ▼",
+        376
+    )
+
+local KGRules = {
+    "Any KG",
+    "Above KG",
+    "Below KG",
+}
+
+local KGIndex = 1
+
+KGRuleButton.MouseButton1Click:Connect(
+    function()
+
+        KGIndex += 1
+
+        if KGIndex
+            > #KGRules
+        then
+            KGIndex = 1
+        end
+
+        Config.KGRule =
+            KGRules[
+                KGIndex
+            ]
+
+        KGRuleButton.Text =
+            Config.KGRule
+            .. "  ▼"
+    end
+)
+
+--------------------------------------------------
+-- KG THRESHOLD
+--------------------------------------------------
+
+makeLabel(
+    "KG Threshold",
+    428
+)
+
+local KGBox =
+    makeTextBox(
+        "1",
+        450
+    )
+
+KGBox.FocusLost:Connect(
+    function()
+
+        local value =
+            tonumber(
+                KGBox.Text
+            )
+
+        if value then
+            Config.KGThreshold =
+                value
+        else
+            KGBox.Text =
+                tostring(
+                    Config.KGThreshold
+                )
+        end
+    end
+)
+
+--------------------------------------------------
+-- AUTO COLLECT
+--------------------------------------------------
+
+local AutoButton =
+    makeButton(
+        "Auto Fruit Collect: OFF",
+        504
+    )
+
+local function updateAutoButton()
+    AutoButton.Text =
+        "Auto Fruit Collect: "
+        .. (
+            Config.AutoCollect
+            and "ON"
+            or "OFF"
+        )
+
+    AutoButton.BackgroundColor3 =
+        Config.AutoCollect
+        and Color3.fromRGB(
+            82,
+            61,
+            160
+        )
+        or Color3.fromRGB(
+            31,
+            31,
+            40
+        )
+end
+
+AutoButton.MouseButton1Click:Connect(
+    function()
+
+        Config.AutoCollect =
+            not Config.AutoCollect
+
+        if Config.AutoCollect then
+            State.Status =
+                "Scanning..."
+        else
+            State.Status =
+                "Idle"
+        end
+
+        updateAutoButton()
+    end
+)
+
+--------------------------------------------------
+-- STATUS
+--------------------------------------------------
+
+local Status =
+    Instance.new("TextLabel")
+
+Status.Size =
+    UDim2.new(
+        1,
+        -32,
+        0,
+        44
+    )
+
+Status.Position =
+    UDim2.fromOffset(
+        16,
+        554
+    )
+
+Status.BackgroundTransparency = 1
+
+Status.Text =
+    "Status: Idle"
+
+Status.TextColor3 =
+    Color3.fromRGB(
+        170,
+        170,
+        185
+    )
+
+Status.Font =
+    Enum.Font.Gotham
+
+Status.TextSize = 12
+
+Status.TextWrapped = true
+
+Status.TextXAlignment =
+    Enum.TextXAlignment.Left
+
+Status.Parent =
+    Main
+
+--------------------------------------------------
+-- FIX FRUIT SELECTION
+-- UI uses display names,
+-- Config needs internal CropName
+--------------------------------------------------
+
+local function rebuildFruitConfig()
+    Config.Fruits = {}
+
+    local selectedDisplay =
+        FruitDropdown
+
+    --------------------------------------------------
+    -- extract current selected entries from the
+    -- dropdown's internal table indirectly by button
+    -- options is inconvenient, so keep separate table
+    --------------------------------------------------
+end
+
+--------------------------------------------------
+-- RECREATE FRUIT DROPDOWN SELECTION PROPERLY
+--------------------------------------------------
+
+local FruitSelectedDisplay = {}
+
+FruitDropdown.Button:Destroy()
+FruitDropdown.List:Destroy()
+
+FruitDropdown =
+    createMultiDropdown(
+        80,
+        "All Fruits",
+        function()
+
+            local found =
+                discoverFruits()
+
+            local options = {}
+
+            FruitNames = {}
+
+            for internal, display
+                in pairs(found)
+            do
+                FruitNames[
+                    display
+                ] =
+                    internal
+
+                options[
+                    #options + 1
+                ] =
+                    display
+            end
+
+            table.sort(options)
+
+            return options
+        end,
+        FruitSelectedDisplay
+    )
+
+local function syncFruitConfig()
+    Config.Fruits = {}
+
+    for display, enabled
+        in pairs(
+            FruitSelectedDisplay
+        )
+    do
+        if enabled then
+            local internal =
+                FruitNames[
+                    display
+                ]
+
+            if internal then
+                Config.Fruits[
+                    internal
+                ] = true
+            end
+        end
+    end
+end
+
+--------------------------------------------------
+-- WATCH FRUIT SELECTION
+--------------------------------------------------
+
+task.spawn(function()
+    local last = ""
+
+    while State.Running
+        and Gui.Parent
+    do
+        task.wait(0.1)
+
+        local snapshot = {}
+
+        for name, enabled
+            in pairs(
+                FruitSelectedDisplay
+            )
+        do
+            if enabled then
+                snapshot[
+                    #snapshot + 1
+                ] = name
+            end
+        end
+
+        table.sort(snapshot)
+
+        local current =
+            table.concat(
+                snapshot,
+                "|"
+            )
+
+        if current ~= last then
+            last = current
+
+            syncFruitConfig()
+        end
+    end
+end)
+
+--------------------------------------------------
+-- AUTO LOOP
+--------------------------------------------------
+
+task.spawn(function()
+
+    while State.Running
+        and Gui.Parent
+    do
+        task.wait(
+            Config.ScanDelay
+        )
+
+        Status.Text =
+            "Status: "
+            .. State.Status
+            .. "\nCollected: "
+            .. tostring(
+                State.Collected
+            )
+
+        if not Config.AutoCollect then
+            continue
+        end
+
+        local fruits =
+            getMatchingFruits()
+
+        if #fruits == 0 then
+            State.Status =
+                "No matching fruits"
+
+            task.wait(0.15)
+
+            continue
+        end
+
+        collectBatch(
+            fruits
+        )
+    end
+end)
+
+--------------------------------------------------
+-- STOP
+--------------------------------------------------
+
+local function stopScript()
+    if not State.Running then
+        return
+    end
+
+    State.Running = false
+
+    Config.AutoCollect = false
+
+    if Gui then
+        Gui:Destroy()
+    end
+end
+
+ENV.ZANJIHUB_BKG_STOP =
+    stopScript
+
+Close.MouseButton1Click:Connect(
+    stopScript
+)
+
+--------------------------------------------------
+-- EXPORT
+--------------------------------------------------
+
+ENV.BahayKuboFruitConfig =
+    Config
+
+ENV.BahayKuboFruitState =
+    State
+
+ENV.BahayKuboDiscoverMutations =
+    discoverMutations
+
+--------------------------------------------------
+-- INITIAL
+--------------------------------------------------
+
+updateAutoButton()
+
+print(
+    "[ZANJIHUB] Bahay Kubo Auto Fruit Collect V4 loaded"
+)
